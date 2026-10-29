@@ -20,6 +20,49 @@ def get_db_path():
     return str(db_path)
 
 
+def decode_attributed_body(blob):
+    """
+    Extract the plain text from a message's attributedBody blob.
+
+    Newer macOS versions often leave message.text NULL and store the body only
+    in attributedBody: an NSAttributedString archived in Apple's undocumented
+    "typedstream" format. The string payload follows the NSString class marker
+    as a "+" type tag, a length (one byte, or 0x81/0x82 followed by a 2- or
+    4-byte little-endian length), then UTF-8 bytes.
+
+    Returns None if the blob is missing or doesn't match that layout.
+    """
+    if not blob:
+        return None
+    blob = bytes(blob)
+    marker = blob.find(b"NSString")
+    if marker == -1:
+        return None
+    tag = blob.find(b"+", marker + len(b"NSString"))
+    if tag == -1 or tag - marker > 24:
+        return None
+    i = tag + 1
+    if i >= len(blob):
+        return None
+    if blob[i] == 0x81:
+        length, i = int.from_bytes(blob[i + 1:i + 3], "little"), i + 3
+    elif blob[i] == 0x82:
+        length, i = int.from_bytes(blob[i + 1:i + 5], "little"), i + 5
+    else:
+        length, i = blob[i], i + 1
+    payload = blob[i:i + length]
+    if len(payload) != length:
+        return None
+    return payload.decode("utf-8", errors="replace")
+
+
+def message_text(text, attributed_body):
+    """Return a message's text, falling back to its attributedBody."""
+    if text:
+        return text
+    return decode_attributed_body(attributed_body) or ""
+
+
 def get_messages_by_phone(phone_number, limit=50):
     """
     Retrieve messages for a specific phone number.
@@ -43,7 +86,8 @@ def get_messages_by_phone(phone_number, limit=50):
         h.id as handle_id,
         m.ROWID as message_id,
         m.cache_has_attachments,
-        m.associated_message_type
+        m.associated_message_type,
+        m.attributedBody
     FROM message m
     JOIN chat_message_join cmj ON m.ROWID = cmj.message_id
     JOIN chat c ON cmj.chat_id = c.ROWID
@@ -65,7 +109,7 @@ def get_messages_by_phone(phone_number, limit=50):
         
         messages.append({
             "time": dt.strftime("%Y-%m-%d %H:%M:%S"),
-            "text": row[1] or "",
+            "text": message_text(row[1], row[7]),
             "is_from_me": bool(row[2]),
             "sender": "Me" if row[2] else row[3],
             "message_id": row[4],
@@ -92,37 +136,45 @@ def search_messages(search_term, limit=50):
     conn = sqlite3.connect(db_path)
     cursor = conn.cursor()
     
+    # Messages whose text lives only in attributedBody can't be matched in SQL,
+    # so fetch them as candidates and match the decoded text in Python.
     query = """
-    SELECT 
+    SELECT
         m.date,
         m.text,
         m.is_from_me,
-        h.id as handle_id
+        h.id as handle_id,
+        m.attributedBody
     FROM message m
     JOIN chat_message_join cmj ON m.ROWID = cmj.message_id
     JOIN chat c ON cmj.chat_id = c.ROWID
     JOIN chat_handle_join chj ON c.ROWID = chj.chat_id
     JOIN handle h ON chj.handle_id = h.ROWID
     WHERE m.text LIKE ?
+       OR ((m.text IS NULL OR m.text = '') AND m.attributedBody IS NOT NULL)
     ORDER BY m.date DESC
-    LIMIT ?
     """
-    
-    cursor.execute(query, (f"%{search_term}%", limit))
-    rows = cursor.fetchall()
-    
+
+    cursor.execute(query, (f"%{search_term}%",))
+    needle = search_term.lower()
+
     messages = []
-    for row in rows:
+    for row in cursor:
+        text = message_text(row[1], row[4])
+        if needle not in text.lower():
+            continue
         timestamp = row[0] / 1000000000 + 978307200
         dt = datetime.fromtimestamp(timestamp)
-        
+
         messages.append({
             "time": dt.strftime("%Y-%m-%d %H:%M:%S"),
-            "text": row[1] or "",
+            "text": text,
             "is_from_me": bool(row[2]),
             "sender": "Me" if row[2] else row[3]
         })
-    
+        if len(messages) >= limit:
+            break
+
     conn.close()
     return messages
 

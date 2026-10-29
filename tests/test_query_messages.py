@@ -1,0 +1,137 @@
+"""
+Tests for query_messages.py against a small synthetic chat.db.
+
+The fixture mirrors the parts of the macOS Messages schema the scripts read:
+one-to-one chats, a group chat, and messages whose text exists only in
+attributedBody (as on newer macOS versions). Run from the repo root:
+
+    python3 -m unittest discover -s tests
+"""
+
+import os
+import sqlite3
+import sys
+import tempfile
+import unittest
+from datetime import datetime
+from pathlib import Path
+from unittest import mock
+
+SCRIPTS = Path(__file__).resolve().parents[1] / "skills" / "imessage-analyzer" / "scripts"
+sys.path.insert(0, str(SCRIPTS))
+
+import query_messages as qm  # noqa: E402
+
+ALICE = "+14155550101"
+BOB = "+14155550102"
+CAROL = "carol@example.com"
+
+LONG_TEXT = "Reminder: " + "the unicorn parade starts at noon, bring snacks. " * 4
+
+
+def apple_ns(when):
+    """Local datetime string -> nanoseconds since 2001-01-01, as chat.db stores it."""
+    seconds = datetime.strptime(when, "%Y-%m-%d %H:%M").timestamp() - 978307200
+    return int(seconds * 1_000_000_000)
+
+
+def typedstream(text):
+    """Build an attributedBody blob laid out like the ones macOS writes."""
+    payload = text.encode("utf-8")
+    n = len(payload)
+    if n < 0x80:
+        length = bytes([n])
+    elif n < 0x10000:
+        length = b"\x81" + n.to_bytes(2, "little")
+    else:
+        length = b"\x82" + n.to_bytes(4, "little")
+    return (
+        b"\x04\x0bstreamtyped\x81\xe8\x03\x84\x01@\x84\x84\x84\x12NSAttributedString\x00"
+        b"\x84\x84\x08NSObject\x00\x85\x92\x84\x84\x84\x08NSString\x01\x94\x84\x01+"
+        + length
+        + payload
+        + b"\x86\x84\x02iI\x01\x05\x92\x84\x84\x84\x0cNSDictionary\x00"
+    )
+
+
+def build_db(path):
+    conn = sqlite3.connect(path)
+    conn.executescript(
+        """
+        CREATE TABLE handle (ROWID INTEGER PRIMARY KEY, id TEXT);
+        CREATE TABLE chat (ROWID INTEGER PRIMARY KEY, chat_identifier TEXT, display_name TEXT);
+        CREATE TABLE chat_handle_join (chat_id INTEGER, handle_id INTEGER);
+        CREATE TABLE message (
+            ROWID INTEGER PRIMARY KEY, date INTEGER, text TEXT, attributedBody BLOB,
+            is_from_me INTEGER, handle_id INTEGER,
+            cache_has_attachments INTEGER DEFAULT 0, associated_message_type INTEGER DEFAULT 0
+        );
+        CREATE TABLE chat_message_join (chat_id INTEGER, message_id INTEGER);
+        """
+    )
+    conn.executemany("INSERT INTO handle VALUES (?, ?)", [(1, ALICE), (2, BOB), (3, CAROL)])
+    conn.executemany(
+        "INSERT INTO chat VALUES (?, ?, ?)",
+        [(1, ALICE, ""), (2, "chat123456", "Weekend plans"), (3, BOB, "")],
+    )
+    conn.executemany(
+        "INSERT INTO chat_handle_join VALUES (?, ?)",
+        [(1, 1), (2, 1), (2, 2), (2, 3), (3, 2)],
+    )
+    # (rowid, chat, date, text, attributedBody, is_from_me, handle_id)
+    messages = [
+        (1, 1, "2026-10-01 10:00", "Are we still on for dinner?", None, 0, 1),
+        (2, 1, "2026-10-01 10:05", "Yes, 7pm", None, 1, 1),
+        (3, 2, "2026-10-01 11:00", "Dinner at my place Saturday", None, 0, 2),
+        (4, 2, "2026-10-01 11:10", None, typedstream("I'll bring dessert 🍰"), 0, 1),
+        (5, 2, "2026-10-01 11:20", "Count me in", None, 1, 0),
+        (6, 3, "2026-10-01 12:00", None, typedstream(LONG_TEXT), 0, 2),
+        (7, 1, "2026-10-01 12:30", None, typedstream("See you at DINNER"), 0, 1),
+    ]
+    for rowid, chat, when, text, body, from_me, handle in messages:
+        conn.execute(
+            "INSERT INTO message (ROWID, date, text, attributedBody, is_from_me, handle_id) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (rowid, apple_ns(when), text, body, from_me, handle),
+        )
+        conn.execute("INSERT INTO chat_message_join VALUES (?, ?)", (chat, rowid))
+    conn.commit()
+    conn.close()
+
+
+class QueryMessagesTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.db = os.path.join(self.tmp.name, "chat.db")
+        build_db(self.db)
+        patcher = mock.patch.object(qm, "get_db_path", return_value=self.db)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.addCleanup(self.tmp.cleanup)
+
+    def test_search_finds_text_stored_only_in_attributed_body(self):
+        results = qm.search_messages("UNICORN", 50)
+        self.assertEqual([m["text"] for m in results], [LONG_TEXT])
+
+
+
+class DecodeAttributedBodyTest(unittest.TestCase):
+    def test_short_text(self):
+        self.assertEqual(qm.decode_attributed_body(typedstream("hi there")), "hi there")
+
+    def test_non_ascii_text(self):
+        self.assertEqual(qm.decode_attributed_body(typedstream("café 🍰 ok")), "café 🍰 ok")
+
+    def test_text_longer_than_127_bytes_uses_two_byte_length(self):
+        self.assertGreater(len(LONG_TEXT.encode()), 127)
+        self.assertEqual(qm.decode_attributed_body(typedstream(LONG_TEXT)), LONG_TEXT)
+
+    def test_missing_or_unrecognized_blob_returns_none(self):
+        self.assertIsNone(qm.decode_attributed_body(None))
+        self.assertIsNone(qm.decode_attributed_body(b""))
+        self.assertIsNone(qm.decode_attributed_body(b"not a typedstream"))
+        self.assertIsNone(qm.decode_attributed_body(typedstream("truncated")[:-30]))
+
+
+if __name__ == "__main__":
+    unittest.main()
