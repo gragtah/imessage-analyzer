@@ -44,8 +44,11 @@ Analysis extracts:
 # List all contacts
 python3 scripts/query_messages.py --contacts
 
-# Get recent conversations
+# Get recent conversations (group chats appear once, with participants)
 python3 scripts/query_messages.py --recent 20
+
+# A contact's one-to-one thread plus the group chats they're in
+python3 scripts/query_messages.py "+14155550123" 100 --include-groups
 
 # Search all messages for a term
 python3 scripts/query_messages.py --search "dinner" 50
@@ -104,4 +107,6 @@ When a user asks to analyze iMessage conversations:
 - Requires Full Disk Access permission for Claude
 - Phone numbers in handle table are formatted like "+14155550123"
 - Message dates are nanoseconds since 2001-01-01 (Apple epoch)
+- Querying a contact returns only your one-to-one thread unless `--include-groups` is passed; each message's `sender` is its actual sender and `is_group` marks group-chat messages
+- When `text` is empty, the scripts decode the message from `attributedBody`, where newer macOS versions store it
 - Scripts output JSON for easy parsing
