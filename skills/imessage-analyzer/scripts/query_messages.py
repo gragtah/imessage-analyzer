@@ -63,60 +63,76 @@ def message_text(text, attributed_body):
     return decode_attributed_body(attributed_body) or ""
 
 
-def get_messages_by_phone(phone_number, limit=50):
+def get_messages_by_phone(phone_number, limit=50, include_groups=False):
     """
-    Retrieve messages for a specific phone number.
-    
+    Retrieve messages for a specific phone number or email handle.
+
     Args:
-        phone_number: Phone number to query (e.g., "+14155550123")
+        phone_number: Handle to query (e.g., "+14155550123")
         limit: Maximum number of messages to retrieve
-    
+        include_groups: Also return messages from group chats this contact
+            is in. By default only the one-to-one thread is returned.
+
     Returns:
         List of message dictionaries with time, text, sender info
     """
     db_path = get_db_path()
     conn = sqlite3.connect(db_path)
     cursor = conn.cursor()
-    
+
+    # The sender is message.handle_id, not the chat's participant list: joining
+    # through chat_handle_join labelled every group message with the queried
+    # contact, whoever actually sent it.
     query = """
-    SELECT 
+    SELECT
         m.date,
         m.text,
         m.is_from_me,
-        h.id as handle_id,
+        s.id as sender_handle,
         m.ROWID as message_id,
         m.cache_has_attachments,
         m.associated_message_type,
-        m.attributedBody
+        m.attributedBody,
+        (SELECT COUNT(*) FROM chat_handle_join p WHERE p.chat_id = cmj.chat_id) as participants
     FROM message m
     JOIN chat_message_join cmj ON m.ROWID = cmj.message_id
-    JOIN chat c ON cmj.chat_id = c.ROWID
-    JOIN chat_handle_join chj ON c.ROWID = chj.chat_id
-    JOIN handle h ON chj.handle_id = h.ROWID
-    WHERE h.id = ?
+    LEFT JOIN handle s ON m.handle_id = s.ROWID
+    WHERE cmj.chat_id IN (
+        SELECT chj.chat_id
+        FROM chat_handle_join chj
+        JOIN handle h ON chj.handle_id = h.ROWID
+        WHERE h.id = ?
+    )
+    AND (? OR (SELECT COUNT(*) FROM chat_handle_join p WHERE p.chat_id = cmj.chat_id) = 1)
     ORDER BY m.date DESC
     LIMIT ?
     """
-    
-    cursor.execute(query, (phone_number, limit))
+
+    cursor.execute(query, (phone_number, include_groups, limit))
     rows = cursor.fetchall()
-    
+
     messages = []
     for row in rows:
         # Convert Apple's timestamp (nanoseconds since 2001-01-01) to datetime
         timestamp = row[0] / 1000000000 + 978307200  # Unix timestamp
         dt = datetime.fromtimestamp(timestamp)
-        
+        is_group = row[8] > 1
+        if row[2]:
+            sender = "Me"
+        else:
+            sender = row[3] or ("Unknown" if is_group else phone_number)
+
         messages.append({
             "time": dt.strftime("%Y-%m-%d %H:%M:%S"),
             "text": message_text(row[1], row[7]),
             "is_from_me": bool(row[2]),
-            "sender": "Me" if row[2] else row[3],
+            "sender": sender,
             "message_id": row[4],
             "has_attachments": bool(row[5]),
-            "is_reaction": bool(row[6])  # reactions like thumbs up
+            "is_reaction": bool(row[6]),  # reactions like thumbs up
+            "is_group": is_group
         })
-    
+
     conn.close()
     return messages
 
@@ -143,13 +159,10 @@ def search_messages(search_term, limit=50):
         m.date,
         m.text,
         m.is_from_me,
-        h.id as handle_id,
+        s.id as sender_handle,
         m.attributedBody
     FROM message m
-    JOIN chat_message_join cmj ON m.ROWID = cmj.message_id
-    JOIN chat c ON cmj.chat_id = c.ROWID
-    JOIN chat_handle_join chj ON c.ROWID = chj.chat_id
-    JOIN handle h ON chj.handle_id = h.ROWID
+    LEFT JOIN handle s ON m.handle_id = s.ROWID
     WHERE m.text LIKE ?
        OR ((m.text IS NULL OR m.text = '') AND m.attributedBody IS NOT NULL)
     ORDER BY m.date DESC
@@ -170,7 +183,7 @@ def search_messages(search_term, limit=50):
             "time": dt.strftime("%Y-%m-%d %H:%M:%S"),
             "text": text,
             "is_from_me": bool(row[2]),
-            "sender": "Me" if row[2] else row[3]
+            "sender": "Me" if row[2] else (row[3] or "Unknown")
         })
         if len(messages) >= limit:
             break
@@ -212,50 +225,78 @@ def get_recent_conversations(limit=10):
         limit: Number of conversations to retrieve
     
     Returns:
-        List of conversation info with contact and message count
+        List of conversation info with contact and message count. A group
+        chat is one conversation (contact is its name, or its participants);
+        one-to-one chats with the same handle are merged.
     """
     db_path = get_db_path()
     conn = sqlite3.connect(db_path)
     cursor = conn.cursor()
-    
-    query = """
-    SELECT 
-        h.id as contact,
+
+    # Count per chat, then look up participants. Grouping by participant (as
+    # before) counted every group message once for each person in the group.
+    cursor.execute("""
+    SELECT
+        c.ROWID,
+        c.display_name,
         COUNT(m.ROWID) as message_count,
         MAX(m.date) as last_message_date
-    FROM message m
-    JOIN chat_message_join cmj ON m.ROWID = cmj.message_id
-    JOIN chat c ON cmj.chat_id = c.ROWID
-    JOIN chat_handle_join chj ON c.ROWID = chj.chat_id
+    FROM chat c
+    JOIN chat_message_join cmj ON cmj.chat_id = c.ROWID
+    JOIN message m ON m.ROWID = cmj.message_id
+    GROUP BY c.ROWID
+    """)
+    chats = cursor.fetchall()
+
+    participants = {}
+    cursor.execute("""
+    SELECT chj.chat_id, h.id
+    FROM chat_handle_join chj
     JOIN handle h ON chj.handle_id = h.ROWID
-    GROUP BY h.id
-    ORDER BY last_message_date DESC
-    LIMIT ?
-    """
-    
-    cursor.execute(query, (limit,))
-    rows = cursor.fetchall()
-    
-    conversations = []
-    for row in rows:
-        timestamp = row[2] / 1000000000 + 978307200
-        dt = datetime.fromtimestamp(timestamp)
-        
-        conversations.append({
-            "contact": row[0],
-            "message_count": row[1],
-            "last_message": dt.strftime("%Y-%m-%d %H:%M:%S")
-        })
-    
+    ORDER BY h.id
+    """)
+    for chat_id, handle in cursor.fetchall():
+        participants.setdefault(chat_id, []).append(handle)
     conn.close()
+
+    merged = {}
+    for chat_id, display_name, count, last_date in chats:
+        people = participants.get(chat_id, [])
+        is_group = len(people) > 1
+        if is_group:
+            key = ("chat", chat_id)
+            contact = display_name or ", ".join(people)
+        else:
+            key = ("handle", people[0] if people else chat_id)
+            contact = people[0] if people else (display_name or "Unknown")
+        entry = merged.setdefault(key, {
+            "contact": contact,
+            "message_count": 0,
+            "last_date": last_date,
+            "is_group": is_group,
+            "participants": people,
+        })
+        entry["message_count"] += count
+        entry["last_date"] = max(entry["last_date"], last_date)
+
+    conversations = []
+    for entry in sorted(merged.values(), key=lambda e: e["last_date"], reverse=True)[:limit]:
+        timestamp = entry.pop("last_date") / 1000000000 + 978307200
+        dt = datetime.fromtimestamp(timestamp)
+        entry["last_message"] = dt.strftime("%Y-%m-%d %H:%M:%S")
+        conversations.append(entry)
+
     return conversations
 
 
 if __name__ == "__main__":
     # Command-line interface
+    include_groups = "--include-groups" in sys.argv
+    sys.argv = [arg for arg in sys.argv if arg != "--include-groups"]
+
     if len(sys.argv) < 2:
         print("Usage:")
-        print("  python query_messages.py <phone_number> [limit]")
+        print("  python query_messages.py <phone_number> [limit] [--include-groups]")
         print("  python query_messages.py --search <term> [limit]")
         print("  python query_messages.py --contacts")
         print("  python query_messages.py --recent [limit]")
@@ -283,5 +324,5 @@ if __name__ == "__main__":
         # Get messages by phone number
         phone_number = sys.argv[1]
         limit = int(sys.argv[2]) if len(sys.argv) > 2 else 50
-        messages = get_messages_by_phone(phone_number, limit)
+        messages = get_messages_by_phone(phone_number, limit, include_groups)
         print(json.dumps(messages, indent=2))

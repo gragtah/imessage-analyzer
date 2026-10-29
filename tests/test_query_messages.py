@@ -109,10 +109,40 @@ class QueryMessagesTest(unittest.TestCase):
         self.addCleanup(patcher.stop)
         self.addCleanup(self.tmp.cleanup)
 
+    def test_contact_lookup_defaults_to_the_one_to_one_thread(self):
+        texts = [m["text"] for m in qm.get_messages_by_phone(ALICE, 50)]
+        self.assertEqual(texts, ["See you at DINNER", "Yes, 7pm", "Are we still on for dinner?"])
+
+    def test_group_messages_are_attributed_to_their_real_sender(self):
+        messages = qm.get_messages_by_phone(ALICE, 50, include_groups=True)
+        by_text = {m["text"]: m for m in messages}
+        self.assertEqual(by_text["Dinner at my place Saturday"]["sender"], BOB)
+        self.assertEqual(by_text["I'll bring dessert 🍰"]["sender"], ALICE)
+        self.assertEqual(by_text["Count me in"]["sender"], "Me")
+        self.assertTrue(by_text["Count me in"]["is_group"])
+        self.assertFalse(by_text["Yes, 7pm"]["is_group"])
+
+    def test_search_returns_each_group_message_once(self):
+        results = qm.search_messages("dinner", 50)
+        texts = [m["text"] for m in results]
+        self.assertEqual(len(texts), len(set(texts)), f"duplicate rows: {texts}")
+        self.assertEqual(
+            texts,
+            ["See you at DINNER", "Dinner at my place Saturday", "Are we still on for dinner?"],
+        )
+        self.assertEqual(results[1]["sender"], BOB)
+
     def test_search_finds_text_stored_only_in_attributed_body(self):
         results = qm.search_messages("UNICORN", 50)
         self.assertEqual([m["text"] for m in results], [LONG_TEXT])
 
+    def test_recent_conversations_count_a_group_chat_once(self):
+        convos = {c["contact"]: c for c in qm.get_recent_conversations(10)}
+        self.assertEqual(set(convos), {ALICE, BOB, "Weekend plans"})
+        self.assertEqual(convos[ALICE]["message_count"], 3)
+        self.assertEqual(convos["Weekend plans"]["message_count"], 3)
+        self.assertTrue(convos["Weekend plans"]["is_group"])
+        self.assertEqual(sorted(convos["Weekend plans"]["participants"]), sorted([ALICE, BOB, CAROL]))
 
 
 class DecodeAttributedBodyTest(unittest.TestCase):
