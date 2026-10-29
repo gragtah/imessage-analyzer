@@ -1,0 +1,13 @@
+{
+  "name": "imessage-analyzer",
+  "displayName": "iMessage Analyzer",
+  "version": "1.0.0",
+  "description": "Read and analyze iMessage conversations on macOS by querying the local Messages database: links, action items, questions, and conversation stats.",
+  "author": {
+    "name": "Gaurav Ragtah",
+    "url": "https://github.com/gragtah"
+  },
+  "repository": "https://github.com/gragtah/imessage-analyzer",
+  "license": "MIT",
+  "keywords": ["imessage", "macos", "messages", "sqlite", "productivity"]
+}

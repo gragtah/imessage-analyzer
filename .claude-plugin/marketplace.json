@@ -1,0 +1,15 @@
+{
+  "name": "gragtah",
+  "description": "Plugins by Gaurav Ragtah",
+  "owner": {
+    "name": "Gaurav Ragtah",
+    "url": "https://github.com/gragtah"
+  },
+  "plugins": [
+    {
+      "name": "imessage-analyzer",
+      "source": "./",
+      "description": "Read and analyze iMessage conversations on macOS."
+    }
+  ]
+}
