@@ -36,6 +36,9 @@ python3 scripts/query_messages.py --recent 20
 # Last 100 messages with one contact, analyzed
 python3 scripts/query_messages.py "+14155550123" 100 | python3 scripts/analyze_messages.py -
 
+# Same, including group chats that contact is in
+python3 scripts/query_messages.py "+14155550123" 100 --include-groups
+
 # Search every conversation
 python3 scripts/query_messages.py --search "dinner" 50
 ```
@@ -48,9 +51,18 @@ Everything runs locally against your own Messages database. The scripts make no 
 
 ## Known limitations
 
-- On recent macOS versions, some message bodies are stored only in the `attributedBody` column, so `text` can come back empty for them.
-- Querying by handle returns messages from every chat that includes that contact, group chats included, and labels non-self messages with the queried handle rather than the actual sender.
+- Newer macOS versions often store a message's text only in `attributedBody`, an archived rich-text blob in an undocumented format. The scripts decode the string payload from it, which covers ordinary messages; anything that doesn't match the expected layout comes back as empty text rather than an error.
+- Searching has to decode those messages before matching, so a search for a rare term scans more of the database than a plain SQL query would.
+- A contact with several handles (a phone number and an email, say) has a separate thread per handle; query each one.
 - Extraction (addresses, dates, action items) uses regex heuristics, so expect some misses and false positives.
+
+## Tests
+
+The tests build a small synthetic `chat.db` (one-to-one chats, a group chat and `attributedBody`-only messages), so they run anywhere without touching real messages:
+
+```bash
+python3 -m unittest discover -s tests
+```
 
 ## Layout
 
@@ -63,6 +75,8 @@ skills/imessage-analyzer/
   scripts/
     query_messages.py  reads chat.db (contacts, recent chats, search, by handle)
     analyze_messages.py  extracts links, action items, questions, stats
+tests/
+  test_query_messages.py  runs against a synthetic chat.db
 ```
 
 ## License
