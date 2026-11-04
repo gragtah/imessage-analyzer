@@ -105,12 +105,13 @@ When a user asks to analyze iMessage conversations:
 
 ## Technical Notes
 
-- Messages database: `~/Library/Messages/chat.db`
+- Messages database: `~/Library/Messages/chat.db`, opened read-only
 - Requires Full Disk Access permission for Claude
 - Phone numbers in handle table are formatted like "+14155550123"
 - Message dates are nanoseconds since 2001-01-01 (Apple epoch)
 - Querying a contact returns only your one-to-one thread unless `--include-groups` is passed; each message's `sender` is its actual sender and `is_group` marks group-chat messages
-- When `text` is empty, the scripts decode the message from `attributedBody`, where newer macOS versions store it
+- When `text` is empty, the scripts decode the message from `attributedBody`, where newer macOS versions store it. They use `pytypedstream` for this if it's installed, and a built-in decoder otherwise
+- `is_edited` and `is_unsent` mark edited and unsent messages (macOS Ventura and later). An unsent message with no text reads `[message unsent]`; earlier versions of an edited message aren't available
 - Tapback reactions (Loved, Laughed at, ...) are flagged `is_reaction`; their text quotes the message they react to, so don't treat them as new messages
 - Contact lookups list each message's `attachments` (name, type, MIME type). A message that is only attachments gets text like `[photo: IMG_1234.HEIC]`; attachment files are never opened
 - Scripts output JSON for easy parsing
