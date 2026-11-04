@@ -14,6 +14,7 @@ sys.path.insert(0, str(SCRIPTS))
 
 import analyze_messages as am  # noqa: E402
 
+ALICE = "+14155550101"
 BOB = "+14155550102"
 
 
@@ -48,6 +49,40 @@ class ReactionsTest(unittest.TestCase):
         self.assertEqual(stats["total_messages"], 2)
         self.assertEqual(stats["my_messages"], 1)
         self.assertEqual(stats["reactions"], 1)
+
+
+class GroupStatsTest(unittest.TestCase):
+    def setUp(self):
+        # Oldest first; the tests also feed this newest first, as query_messages.py does
+        self.chronological = [
+            msg("10:00", "Dinner Saturday?", BOB, is_group=True),
+            msg("10:05", "I'm in", ALICE, is_group=True),
+            msg("10:06", "Same", "Me", is_group=True),
+            msg("10:20", "Great, 7pm", BOB, is_group=True),
+            msg("10:21", "See you then", BOB, is_group=True),
+        ]
+
+    def stats(self, messages):
+        return am.analyze_conversation(messages)["stats"]
+
+    def test_counts_messages_per_sender(self):
+        stats = self.stats(self.chronological)
+        self.assertEqual(stats["messages_by_sender"], {BOB: 3, ALICE: 1, "Me": 1})
+
+    def test_response_times_are_per_sender(self):
+        # Alice replied 5 min after Bob, I replied 1 min after Alice, Bob 14 min after me.
+        # Bob's follow-up to himself isn't a reply.
+        stats = self.stats(self.chronological)
+        self.assertEqual(
+            stats["avg_response_time_by_sender_minutes"], {ALICE: 5.0, "Me": 1.0, BOB: 14.0}
+        )
+
+    def test_overall_response_time_still_measures_me_versus_others(self):
+        # Me after Alice (1 min) and Bob after me (14 min); Alice after Bob doesn't involve me
+        self.assertEqual(self.stats(self.chronological)["avg_response_time_minutes"], 7.5)
+
+    def test_message_order_does_not_matter(self):
+        self.assertEqual(self.stats(self.chronological), self.stats(self.chronological[::-1]))
 
 
 if __name__ == "__main__":

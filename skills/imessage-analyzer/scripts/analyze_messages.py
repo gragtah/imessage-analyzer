@@ -137,32 +137,43 @@ def get_conversation_stats(messages):
     
     # Count attachments
     attachments = sum(1 for m in messages if m.get('has_attachments'))
-    
-    # Calculate response times (rough estimate based on time gaps)
+
+    messages_by_sender = Counter(m['sender'] for m in messages)
+
+    # Response times (rough estimate based on time gaps). Walk the messages
+    # oldest first, whatever order they arrived in. A reply is a message that
+    # follows someone else's within an hour: overall, between me and anyone
+    # else; per sender, from whoever spoke before them.
+    ordered = sorted(messages, key=lambda m: m['time'])
     response_times = []
-    for i in range(1, len(messages)):
-        prev_msg = messages[i]
-        curr_msg = messages[i-1]
-        
-        # If sender changed, calculate response time
+    response_times_by_sender = {}
+    for prev_msg, curr_msg in zip(ordered, ordered[1:]):
+        prev_time = datetime.strptime(prev_msg['time'], "%Y-%m-%d %H:%M:%S")
+        curr_time = datetime.strptime(curr_msg['time'], "%Y-%m-%d %H:%M:%S")
+        gap_minutes = (curr_time - prev_time).total_seconds() / 60
+        if gap_minutes >= 60:  # Only count if within an hour
+            continue
         if prev_msg['is_from_me'] != curr_msg['is_from_me']:
-            prev_time = datetime.strptime(prev_msg['time'], "%Y-%m-%d %H:%M:%S")
-            curr_time = datetime.strptime(curr_msg['time'], "%Y-%m-%d %H:%M:%S")
-            gap_minutes = (curr_time - prev_time).total_seconds() / 60
-            if gap_minutes < 60:  # Only count if within an hour
-                response_times.append(gap_minutes)
-    
+            response_times.append(gap_minutes)
+        if prev_msg['sender'] != curr_msg['sender']:
+            response_times_by_sender.setdefault(curr_msg['sender'], []).append(gap_minutes)
+
     avg_response_time = sum(response_times) / len(response_times) if response_times else 0
-    
+
     return {
         'total_messages': total_messages,
         'my_messages': my_messages,
         'their_messages': their_messages,
+        'messages_by_sender': dict(messages_by_sender.most_common()),
         'first_message': oldest.strftime("%Y-%m-%d"),
         'last_message': newest.strftime("%Y-%m-%d"),
         'duration_days': duration_days,
         'attachments': attachments,
-        'avg_response_time_minutes': round(avg_response_time, 1)
+        'avg_response_time_minutes': round(avg_response_time, 1),
+        'avg_response_time_by_sender_minutes': {
+            sender: round(sum(gaps) / len(gaps), 1)
+            for sender, gaps in response_times_by_sender.items()
+        }
     }
 
 
