@@ -35,23 +35,43 @@ def apple_ns(when):
     return int(seconds * 1_000_000_000)
 
 
-def typedstream(text):
-    """Build an attributedBody blob laid out like the ones macOS writes."""
-    payload = text.encode("utf-8")
-    n = len(payload)
+def typedstream_int(n):
+    """Encode an integer the way typedstream does: one byte, or 0x81/0x82 + 2/4 bytes."""
     if n < 0x80:
-        length = bytes([n])
-    elif n < 0x10000:
-        length = b"\x81" + n.to_bytes(2, "little")
-    else:
-        length = b"\x82" + n.to_bytes(4, "little")
+        return bytes([n])
+    if n < 0x10000:
+        return b"\x81" + n.to_bytes(2, "little")
+    return b"\x82" + n.to_bytes(4, "little")
+
+
+def typedstream(text):
+    """
+    Build a complete attributedBody blob laid out like the ones macOS writes:
+    an NSAttributedString holding the text, one attribute range covering it,
+    and an attribute dictionary. Both decoders, the built-in byte scan and
+    pytypedstream, can read it.
+    """
+    payload = text.encode("utf-8")
+    utf16_length = len(text.encode("utf-16-le")) // 2
     return (
         b"\x04\x0bstreamtyped\x81\xe8\x03\x84\x01@\x84\x84\x84\x12NSAttributedString\x00"
         b"\x84\x84\x08NSObject\x00\x85\x92\x84\x84\x84\x08NSString\x01\x94\x84\x01+"
-        + length
+        + typedstream_int(len(payload))
         + payload
-        + b"\x86\x84\x02iI\x01\x05\x92\x84\x84\x84\x0cNSDictionary\x00"
+        + b"\x86\x84\x02iI\x01"
+        + typedstream_int(utf16_length)
+        + b"\x92\x84\x84\x84\x0cNSDictionary\x00\x94\x84\x01i\x01"
+        b"\x92\x84\x96\x96\x1d__kIMMessagePartAttributeName\x86"
+        b"\x92\x84\x84\x84\x08NSNumber\x00\x84\x84\x07NSValue\x00\x94\x84\x01*\x84\x84\x01q\x9d\x00"
+        b"\x86\x86\x86"
     )
+
+
+# A valid typedstream archive of a bare NSString rather than an NSAttributedString
+BARE_NSSTRING = (
+    b"\x04\x0bstreamtyped\x81\xe8\x03\x84\x01@\x84\x84\x84\x08NSString\x01"
+    b"\x84\x84\x08NSObject\x00\x85\x84\x01+\x05hello\x86"
+)
 
 
 def build_db(path, edit_columns=True):
@@ -252,7 +272,9 @@ class QueryMessagesTest(unittest.TestCase):
         self.assertEqual(sorted(convos["Weekend plans"]["participants"]), sorted([ALICE, BOB, CAROL]))
 
 
-class DecodeAttributedBodyTest(unittest.TestCase):
+class DecodeAttributedBodyCases:
+    """Cases every decoder must pass. Subclasses choose the decoder."""
+
     def test_short_text(self):
         self.assertEqual(qm.decode_attributed_body(typedstream("hi there")), "hi there")
 
@@ -263,11 +285,43 @@ class DecodeAttributedBodyTest(unittest.TestCase):
         self.assertGreater(len(LONG_TEXT.encode()), 127)
         self.assertEqual(qm.decode_attributed_body(typedstream(LONG_TEXT)), LONG_TEXT)
 
+    def test_text_longer_than_65535_bytes_uses_four_byte_length(self):
+        text = "x" * 70000
+        self.assertEqual(qm.decode_attributed_body(typedstream(text)), text)
+
     def test_missing_or_unrecognized_blob_returns_none(self):
+        blob = typedstream("truncated")
         self.assertIsNone(qm.decode_attributed_body(None))
         self.assertIsNone(qm.decode_attributed_body(b""))
         self.assertIsNone(qm.decode_attributed_body(b"not a typedstream"))
-        self.assertIsNone(qm.decode_attributed_body(typedstream("truncated")[:-30]))
+        self.assertIsNone(qm.decode_attributed_body(blob[:blob.index(b"truncated") + 4]))
+
+
+class DecodeWithByteScanTest(DecodeAttributedBodyCases, unittest.TestCase):
+    """The built-in decoder, used when pytypedstream isn't installed."""
+
+    def setUp(self):
+        patcher = mock.patch.object(qm, "typedstream", None)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+
+@unittest.skipIf(qm.typedstream is None, "pytypedstream is not installed")
+class DecodeWithPytypedstreamTest(DecodeAttributedBodyCases, unittest.TestCase):
+    """pytypedstream, used when installed, with the byte scan as fallback."""
+
+    def test_archive_that_is_not_an_attributed_string_returns_none(self):
+        # The byte scan would read "hello" out of this; pytypedstream knows better
+        self.assertIsNone(qm.decode_attributed_body(BARE_NSSTRING))
+
+    def test_falls_back_to_the_byte_scan_when_pytypedstream_cannot_read_the_blob(self):
+        # Cut off after the text: pytypedstream rejects the incomplete
+        # stream, but the byte scan can still read the text
+        blob = typedstream("still readable")
+        cut = blob[:blob.index(b"still readable") + len("still readable")]
+        with self.assertRaises(Exception):
+            qm.typedstream.unarchive_from_data(cut)
+        self.assertEqual(qm.decode_attributed_body(cut), "still readable")
 
 
 if __name__ == "__main__":

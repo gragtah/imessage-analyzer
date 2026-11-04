@@ -10,6 +10,15 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
+# Optional: pytypedstream (pip install pytypedstream) is a full parser for the
+# typedstream format attributedBody uses. Without it, a built-in byte scan
+# reads the text instead.
+try:
+    import typedstream
+    from typedstream.types.foundation import NSString as TypedNSString
+except ImportError:
+    typedstream = None
+
 
 def get_db_path():
     """Get the path to the iMessages database."""
@@ -36,15 +45,55 @@ def decode_attributed_body(blob):
 
     Newer macOS versions often leave message.text NULL and store the body only
     in attributedBody: an NSAttributedString archived in Apple's undocumented
-    "typedstream" format. The string payload follows the NSString class marker
-    as a "+" type tag, a length (one byte, or 0x81/0x82 followed by a 2- or
-    4-byte little-endian length), then UTF-8 bytes.
+    "typedstream" format. Uses pytypedstream when it's installed, and the
+    built-in byte scan otherwise, or when pytypedstream can't read the blob.
 
-    Returns None if the blob is missing or doesn't match that layout.
+    Returns None if the blob is missing or holds no readable text.
     """
     if not blob:
         return None
     blob = bytes(blob)
+    if typedstream is not None:
+        try:
+            return decode_with_pytypedstream(blob)
+        except NoStringFound:
+            pass
+        except Exception:
+            # pytypedstream raises a range of errors on streams it can't parse
+            # or classes it doesn't support; the byte scan may still read them
+            pass
+    return decode_by_scanning(blob)
+
+
+class NoStringFound(Exception):
+    """pytypedstream read an attributed string but found no text in it."""
+
+
+def decode_with_pytypedstream(blob):
+    """
+    Read attributedBody with pytypedstream. Returns None for an archive that
+    isn't an attributed string, which the byte scan could misread.
+    """
+    archived = typedstream.unarchive_from_data(blob)
+    class_name = getattr(getattr(archived, "clazz", None), "name", None)
+    if class_name not in (b"NSAttributedString", b"NSMutableAttributedString"):
+        return None
+    # The first item in an archived attributed string is its text
+    for item in archived.contents:
+        value = getattr(item, "value", None)
+        if isinstance(value, TypedNSString):
+            return value.value
+    raise NoStringFound()
+
+
+def decode_by_scanning(blob):
+    """
+    Read attributedBody without a parser. The string payload follows the
+    NSString class marker as a "+" type tag, a length (one byte, or 0x81/0x82
+    followed by a 2- or 4-byte little-endian length), then UTF-8 bytes.
+
+    Returns None if the blob doesn't match that layout.
+    """
     marker = blob.find(b"NSString")
     if marker == -1:
         return None
