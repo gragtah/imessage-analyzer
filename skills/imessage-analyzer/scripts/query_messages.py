@@ -20,6 +20,16 @@ def get_db_path():
     return str(db_path)
 
 
+def connect():
+    """
+    Open the Messages database read-only, so these scripts can never change
+    it. Messages may be writing to it at the same time, so wait up to five
+    seconds for a lock instead of failing straight away.
+    """
+    uri = Path(get_db_path()).resolve().as_uri() + "?mode=ro"
+    return sqlite3.connect(uri, uri=True, timeout=5)
+
+
 def decode_attributed_body(blob):
     """
     Extract the plain text from a message's attributedBody blob.
@@ -147,8 +157,7 @@ def get_messages_by_phone(phone_number, limit=50, include_groups=False):
     Returns:
         List of message dictionaries with time, text, sender info
     """
-    db_path = get_db_path()
-    conn = sqlite3.connect(db_path)
+    conn = connect()
     cursor = conn.cursor()
 
     # The sender is message.handle_id, not the chat's participant list: joining
@@ -225,8 +234,7 @@ def search_messages(search_term, limit=50):
     Returns:
         List of matching messages with context
     """
-    db_path = get_db_path()
-    conn = sqlite3.connect(db_path)
+    conn = connect()
     cursor = conn.cursor()
     
     # Messages whose text lives only in attributedBody can't be matched in SQL,
@@ -278,8 +286,7 @@ def get_all_contacts():
     Returns:
         List of unique phone numbers/handles
     """
-    db_path = get_db_path()
-    conn = sqlite3.connect(db_path)
+    conn = connect()
     cursor = conn.cursor()
     
     query = """
@@ -308,8 +315,7 @@ def get_recent_conversations(limit=10):
         chat is one conversation (contact is its name, or its participants);
         one-to-one chats with the same handle are merged.
     """
-    db_path = get_db_path()
-    conn = sqlite3.connect(db_path)
+    conn = connect()
     cursor = conn.cursor()
 
     # Count per chat, then look up participants. Grouping by participant (as
