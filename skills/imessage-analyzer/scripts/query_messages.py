@@ -63,6 +63,16 @@ def message_text(text, attributed_body):
     return decode_attributed_body(attributed_body) or ""
 
 
+def is_tapback(associated_message_type):
+    """
+    True for tapback reactions (Loved, Liked, Laughed at, ...) and their
+    removals. Messages stores these as ordinary rows whose text quotes the
+    message they react to, with associated_message_type 2000-2999 for a
+    reaction and 3000-3999 for removing one.
+    """
+    return associated_message_type is not None and 2000 <= associated_message_type < 4000
+
+
 def get_messages_by_phone(phone_number, limit=50, include_groups=False):
     """
     Retrieve messages for a specific phone number or email handle.
@@ -129,7 +139,7 @@ def get_messages_by_phone(phone_number, limit=50, include_groups=False):
             "sender": sender,
             "message_id": row[4],
             "has_attachments": bool(row[5]),
-            "is_reaction": bool(row[6]),  # reactions like thumbs up
+            "is_reaction": is_tapback(row[6]),
             "is_group": is_group
         })
 
@@ -160,7 +170,8 @@ def search_messages(search_term, limit=50):
         m.text,
         m.is_from_me,
         s.id as sender_handle,
-        m.attributedBody
+        m.attributedBody,
+        m.associated_message_type
     FROM message m
     LEFT JOIN handle s ON m.handle_id = s.ROWID
     WHERE m.text LIKE ?
@@ -183,7 +194,8 @@ def search_messages(search_term, limit=50):
             "time": dt.strftime("%Y-%m-%d %H:%M:%S"),
             "text": text,
             "is_from_me": bool(row[2]),
-            "sender": "Me" if row[2] else (row[3] or "Unknown")
+            "sender": "Me" if row[2] else (row[3] or "Unknown"),
+            "is_reaction": is_tapback(row[5])
         })
         if len(messages) >= limit:
             break

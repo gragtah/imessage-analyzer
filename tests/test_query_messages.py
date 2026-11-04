@@ -78,7 +78,7 @@ def build_db(path):
         "INSERT INTO chat_handle_join VALUES (?, ?)",
         [(1, 1), (2, 1), (2, 2), (2, 3), (3, 2)],
     )
-    # (rowid, chat, date, text, attributedBody, is_from_me, handle_id)
+    # (rowid, chat, date, text, attributedBody, is_from_me, handle_id[, associated_message_type])
     messages = [
         (1, 1, "2026-10-01 10:00", "Are we still on for dinner?", None, 0, 1),
         (2, 1, "2026-10-01 10:05", "Yes, 7pm", None, 1, 1),
@@ -87,12 +87,15 @@ def build_db(path):
         (5, 2, "2026-10-01 11:20", "Count me in", None, 1, 0),
         (6, 3, "2026-10-01 12:00", None, typedstream(LONG_TEXT), 0, 2),
         (7, 1, "2026-10-01 12:30", None, typedstream("See you at DINNER"), 0, 1),
+        (8, 3, "2026-10-01 12:40", "Can you call me?", None, 0, 2),
+        (9, 3, "2026-10-01 12:41", "Loved “Can you call me?”", None, 1, 0, 2000),
     ]
-    for rowid, chat, when, text, body, from_me, handle in messages:
+    for rowid, chat, when, text, body, from_me, handle, *rest in messages:
+        assoc = rest[0] if rest else 0
         conn.execute(
-            "INSERT INTO message (ROWID, date, text, attributedBody, is_from_me, handle_id) "
-            "VALUES (?, ?, ?, ?, ?, ?)",
-            (rowid, apple_ns(when), text, body, from_me, handle),
+            "INSERT INTO message (ROWID, date, text, attributedBody, is_from_me, handle_id, "
+            "associated_message_type) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (rowid, apple_ns(when), text, body, from_me, handle, assoc),
         )
         conn.execute("INSERT INTO chat_message_join VALUES (?, ?)", (chat, rowid))
     conn.commit()
@@ -135,6 +138,15 @@ class QueryMessagesTest(unittest.TestCase):
     def test_search_finds_text_stored_only_in_attributed_body(self):
         results = qm.search_messages("UNICORN", 50)
         self.assertEqual([m["text"] for m in results], [LONG_TEXT])
+
+    def test_tapback_reactions_are_flagged_in_lookups_and_search(self):
+        lookup = {m["text"]: m for m in qm.get_messages_by_phone(BOB, 50)}
+        self.assertTrue(lookup["Loved “Can you call me?”"]["is_reaction"])
+        self.assertFalse(lookup["Can you call me?"]["is_reaction"])
+        found = {m["text"]: m for m in qm.search_messages("call me", 50)}
+        self.assertEqual(set(found), {"Can you call me?", "Loved “Can you call me?”"})
+        self.assertTrue(found["Loved “Can you call me?”"]["is_reaction"])
+        self.assertFalse(found["Can you call me?"]["is_reaction"])
 
     def test_recent_conversations_count_a_group_chat_once(self):
         convos = {c["contact"]: c for c in qm.get_recent_conversations(10)}
