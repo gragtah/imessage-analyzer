@@ -67,6 +67,10 @@ def build_db(path):
             cache_has_attachments INTEGER DEFAULT 0, associated_message_type INTEGER DEFAULT 0
         );
         CREATE TABLE chat_message_join (chat_id INTEGER, message_id INTEGER);
+        CREATE TABLE attachment (
+            ROWID INTEGER PRIMARY KEY, filename TEXT, mime_type TEXT, transfer_name TEXT
+        );
+        CREATE TABLE message_attachment_join (message_id INTEGER, attachment_id INTEGER);
         """
     )
     conn.executemany("INSERT INTO handle VALUES (?, ?)", [(1, ALICE), (2, BOB), (3, CAROL)])
@@ -89,6 +93,10 @@ def build_db(path):
         (7, 1, "2026-10-01 12:30", None, typedstream("See you at DINNER"), 0, 1),
         (8, 3, "2026-10-01 12:40", "Can you call me?", None, 0, 2),
         (9, 3, "2026-10-01 12:41", "Loved “Can you call me?”", None, 1, 0, 2000),
+        # U+FFFC marks where an attachment sits in the text
+        (10, 3, "2026-10-01 12:45", "\ufffc", None, 0, 2),
+        (11, 3, "2026-10-01 12:50", "\ufffcLook at this menu", None, 0, 2),
+        (12, 3, "2026-10-01 12:55", None, typedstream("\ufffc\ufffc"), 1, 0),
     ]
     for rowid, chat, when, text, body, from_me, handle, *rest in messages:
         assoc = rest[0] if rest else 0
@@ -98,6 +106,17 @@ def build_db(path):
             (rowid, apple_ns(when), text, body, from_me, handle, assoc),
         )
         conn.execute("INSERT INTO chat_message_join VALUES (?, ?)", (chat, rowid))
+    # (attachment rowid, message rowid, filename, mime_type, transfer_name)
+    attachments = [
+        (1, 10, "~/Library/Messages/Attachments/ab/IMG_0001.HEIC", "image/heic", "IMG_0001.HEIC"),
+        (2, 11, "~/Library/Messages/Attachments/cd/menu.pdf", "application/pdf", "menu.pdf"),
+        (3, 12, "~/Library/Messages/Attachments/ef/clip.mov", None, None),
+        (4, 12, None, None, None),
+    ]
+    for rowid, message, filename, mime, name in attachments:
+        conn.execute("INSERT INTO attachment VALUES (?, ?, ?, ?)", (rowid, filename, mime, name))
+        conn.execute("INSERT INTO message_attachment_join VALUES (?, ?)", (message, rowid))
+        conn.execute("UPDATE message SET cache_has_attachments = 1 WHERE ROWID = ?", (message,))
     conn.commit()
     conn.close()
 
@@ -147,6 +166,40 @@ class QueryMessagesTest(unittest.TestCase):
         self.assertEqual(set(found), {"Can you call me?", "Loved “Can you call me?”"})
         self.assertTrue(found["Loved “Can you call me?”"]["is_reaction"])
         self.assertFalse(found["Can you call me?"]["is_reaction"])
+
+    def test_attachments_are_listed_and_named_in_place_of_blank_text(self):
+        by_id = {m["message_id"]: m for m in qm.get_messages_by_phone(BOB, 50)}
+        photo = by_id[10]
+        self.assertEqual(photo["text"], "[photo: IMG_0001.HEIC]")
+        self.assertEqual(
+            photo["attachments"],
+            [{"name": "IMG_0001.HEIC", "type": "photo", "mime_type": "image/heic"}],
+        )
+        self.assertTrue(photo["has_attachments"])
+
+    def test_attachment_with_text_keeps_the_text(self):
+        by_id = {m["message_id"]: m for m in qm.get_messages_by_phone(BOB, 50)}
+        self.assertEqual(by_id[11]["text"], "Look at this menu")
+        self.assertEqual(by_id[11]["attachments"][0]["type"], "file")
+        self.assertEqual(by_id[8]["attachments"], [])
+        self.assertFalse(by_id[8]["has_attachments"])
+
+    def test_attachment_type_falls_back_to_the_file_extension(self):
+        by_id = {m["message_id"]: m for m in qm.get_messages_by_phone(BOB, 50)}
+        self.assertEqual(by_id[12]["text"], "[video: clip.mov] [file]")
+
+    def test_search_strips_attachment_markers_from_text(self):
+        results = qm.search_messages("look at this", 50)
+        self.assertEqual([m["text"] for m in results], ["Look at this menu"])
+
+    def test_lookup_works_without_attachment_tables(self):
+        conn = sqlite3.connect(self.db)
+        conn.executescript("DROP TABLE attachment; DROP TABLE message_attachment_join;")
+        conn.close()
+        by_id = {m["message_id"]: m for m in qm.get_messages_by_phone(BOB, 50)}
+        self.assertEqual(by_id[10]["text"], "")
+        self.assertEqual(by_id[10]["attachments"], [])
+        self.assertTrue(by_id[10]["has_attachments"])
 
     def test_recent_conversations_count_a_group_chat_once(self):
         convos = {c["contact"]: c for c in qm.get_recent_conversations(10)}

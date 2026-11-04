@@ -56,11 +56,72 @@ def decode_attributed_body(blob):
     return payload.decode("utf-8", errors="replace")
 
 
+ATTACHMENT_MARKER = "\ufffc"  # stands in for an attachment inside message text
+
+PHOTO_EXTENSIONS = {"heic", "heif", "jpg", "jpeg", "png", "gif", "webp", "tif", "tiff"}
+VIDEO_EXTENSIONS = {"mov", "mp4", "m4v"}
+AUDIO_EXTENSIONS = {"caf", "m4a", "aac", "amr", "mp3", "wav"}
+
+
 def message_text(text, attributed_body):
     """Return a message's text, falling back to its attributedBody."""
-    if text:
-        return text
-    return decode_attributed_body(attributed_body) or ""
+    if not text:
+        text = decode_attributed_body(attributed_body) or ""
+    return text.replace(ATTACHMENT_MARKER, "")
+
+
+def attachment_type(mime_type, name):
+    """Classify an attachment as photo, video, audio or file."""
+    major = (mime_type or "").split("/")[0]
+    if major == "image":
+        return "photo"
+    if major in ("video", "audio"):
+        return major
+    extension = name.rsplit(".", 1)[-1].lower() if name and "." in name else ""
+    if extension in PHOTO_EXTENSIONS:
+        return "photo"
+    if extension in VIDEO_EXTENSIONS:
+        return "video"
+    if extension in AUDIO_EXTENSIONS:
+        return "audio"
+    return "file"
+
+
+def get_attachments(cursor, message_ids):
+    """
+    Map each message id to its attachments' names and types. File contents
+    are never read. Returns an empty map if the attachment tables are missing.
+    """
+    attachments = {}
+    ids = list(message_ids)
+    for start in range(0, len(ids), 500):  # stay under SQLite's variable limit
+        chunk = ids[start:start + 500]
+        placeholders = ",".join("?" * len(chunk))
+        try:
+            cursor.execute(f"""
+            SELECT maj.message_id, a.transfer_name, a.filename, a.mime_type
+            FROM message_attachment_join maj
+            JOIN attachment a ON a.ROWID = maj.attachment_id
+            WHERE maj.message_id IN ({placeholders})
+            ORDER BY maj.message_id, a.ROWID
+            """, chunk)
+        except sqlite3.OperationalError:
+            return {}
+        for message_id, transfer_name, filename, mime_type in cursor.fetchall():
+            name = transfer_name or (filename.rsplit("/", 1)[-1] if filename else None)
+            attachments.setdefault(message_id, []).append({
+                "name": name,
+                "type": attachment_type(mime_type, name),
+                "mime_type": mime_type,
+            })
+    return attachments
+
+
+def describe_attachments(attachments):
+    """Placeholder text for a message that is only attachments, e.g. "[photo: IMG_1234.HEIC]"."""
+    return " ".join(
+        f"[{a['type']}: {a['name']}]" if a["name"] else f"[{a['type']}]" for a in attachments
+    )
 
 
 def is_tapback(associated_message_type):
@@ -120,6 +181,7 @@ def get_messages_by_phone(phone_number, limit=50, include_groups=False):
 
     cursor.execute(query, (phone_number, include_groups, limit))
     rows = cursor.fetchall()
+    attachments_by_message = get_attachments(cursor, [row[4] for row in rows])
 
     messages = []
     for row in rows:
@@ -131,14 +193,19 @@ def get_messages_by_phone(phone_number, limit=50, include_groups=False):
             sender = "Me"
         else:
             sender = row[3] or ("Unknown" if is_group else phone_number)
+        attachments = attachments_by_message.get(row[4], [])
+        text = message_text(row[1], row[7])
+        if not text.strip() and attachments:
+            text = describe_attachments(attachments)
 
         messages.append({
             "time": dt.strftime("%Y-%m-%d %H:%M:%S"),
-            "text": message_text(row[1], row[7]),
+            "text": text,
             "is_from_me": bool(row[2]),
             "sender": sender,
             "message_id": row[4],
-            "has_attachments": bool(row[5]),
+            "has_attachments": bool(row[5]) or bool(attachments),
+            "attachments": attachments,
             "is_reaction": is_tapback(row[6]),
             "is_group": is_group
         })
