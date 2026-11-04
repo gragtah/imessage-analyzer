@@ -123,13 +123,21 @@ def build_db(path):
 
 class QueryMessagesTest(unittest.TestCase):
     def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory()
+        # A space in the path checks that the read-only URI is quoted properly
+        self.tmp = tempfile.TemporaryDirectory(prefix="Messages copy ")
         self.db = os.path.join(self.tmp.name, "chat.db")
         build_db(self.db)
         patcher = mock.patch.object(qm, "get_db_path", return_value=self.db)
         patcher.start()
         self.addCleanup(patcher.stop)
         self.addCleanup(self.tmp.cleanup)
+
+    def test_database_is_opened_read_only(self):
+        conn = qm.connect()
+        self.addCleanup(conn.close)
+        self.assertEqual(conn.execute("SELECT COUNT(*) FROM message").fetchone()[0], 12)
+        with self.assertRaisesRegex(sqlite3.OperationalError, "readonly"):
+            conn.execute("DELETE FROM message")
 
     def test_contact_lookup_defaults_to_the_one_to_one_thread(self):
         texts = [m["text"] for m in qm.get_messages_by_phone(ALICE, 50)]
