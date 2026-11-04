@@ -12,6 +12,7 @@ Ask Claude things like:
 
 - macOS with Messages signed in
 - Python 3 (standard library only, no dependencies)
+- Optional: [`pytypedstream`](https://pypi.org/project/pytypedstream/) (`python3 -m pip install pytypedstream`), a full parser for the format newer macOS versions store message text in. The scripts use it when it's installed and a built-in decoder otherwise.
 - **Full Disk Access** for the app that runs the scripts, since `~/Library/Messages/chat.db` is protected. That's Terminal, iTerm or your editor if you use its built-in terminal, or the Claude app. Grant it in System Settings → Privacy & Security → Full Disk Access, then quit and reopen that app; until you do, the scripts fail with `authorization denied`.
 
 ## Install
@@ -47,24 +48,27 @@ Both scripts emit JSON.
 
 ## Privacy
 
-Everything runs locally against your own Messages database. The scripts make no network calls. When used through Claude, only the messages a query returns are read into the conversation.
+Everything runs locally against your own Messages database, which the scripts open read-only. They make no network calls. When used through Claude, only the messages a query returns are read into the conversation.
 
 ## Known limitations
 
-- Newer macOS versions often store a message's text only in `attributedBody`, an archived rich-text blob in an undocumented format. The scripts decode the string payload from it, which covers ordinary messages; anything that doesn't match the expected layout comes back as empty text rather than an error.
+- Newer macOS versions often store a message's text only in `attributedBody`, an archived rich-text blob in Apple's undocumented typedstream format. The scripts read it with `pytypedstream` if it's installed, and otherwise with a built-in decoder that finds the text without fully parsing the archive. The two agreed on every real message body tested, but the built-in one can misread an archive that isn't a message body. Anything neither can read comes back as empty text rather than an error.
 - Searching has to decode those messages before matching, so a search for a rare term scans more of the database than a plain SQL query would.
 - A contact with several handles (a phone number and an email, say) has a separate thread per handle; query each one.
 - Contacts appear as phone numbers or emails, not names. The scripts don't read the Contacts app.
+- Edited and unsent messages are flagged (`is_edited`, `is_unsent`) on macOS Ventura and later, but earlier versions of an edited message aren't shown.
 - Attachments are described by name and type only, never opened. Contact lookups list them (and describe an attachment-only message as, say, `[photo: IMG_1234.HEIC]`), but search results don't.
 - Extraction (addresses, dates, action items) uses regex heuristics, so expect some misses and false positives.
 
 ## Tests
 
-The tests build a small synthetic `chat.db` (one-to-one chats, a group chat, `attributedBody`-only messages, tapback reactions and attachments) and sample conversations for the analyzer, so they run anywhere without touching real messages:
+The tests build a small synthetic `chat.db` (one-to-one chats, a group chat, `attributedBody`-only messages, tapback reactions, attachments, and edited and unsent messages) and sample conversations for the analyzer, so they run anywhere without touching real messages:
 
 ```bash
 python3 -m unittest discover -s tests
 ```
+
+The decoder tests run against both decoders. The `pytypedstream` ones are skipped when it isn't installed.
 
 ## Layout
 
