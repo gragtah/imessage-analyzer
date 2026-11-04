@@ -12,7 +12,7 @@ Ask Claude things like:
 
 - macOS with Messages signed in
 - Python 3 (standard library only, no dependencies)
-- **Full Disk Access** for whatever runs the scripts (Terminal, or the Claude app), since `~/Library/Messages/chat.db` is protected. Grant it in System Settings → Privacy & Security → Full Disk Access.
+- **Full Disk Access** for the app that runs the scripts, since `~/Library/Messages/chat.db` is protected. That's Terminal, iTerm or your editor if you use its built-in terminal, or the Claude app. Grant it in System Settings → Privacy & Security → Full Disk Access, then quit and reopen that app; until you do, the scripts fail with `authorization denied`.
 
 ## Install
 
@@ -54,6 +54,10 @@ Everything runs locally against your own Messages database. The scripts make no 
 - Newer macOS versions often store a message's text only in `attributedBody`, an archived rich-text blob in an undocumented format. The scripts decode the string payload from it, which covers ordinary messages; anything that doesn't match the expected layout comes back as empty text rather than an error.
 - Searching has to decode those messages before matching, so a search for a rare term scans more of the database than a plain SQL query would.
 - A contact with several handles (a phone number and an email, say) has a separate thread per handle; query each one.
+- Contacts appear as phone numbers or emails, not names. The scripts don't read the Contacts app.
+- Messages that are only an attachment (a photo, file or voice memo) come back with blank text. Attachments themselves aren't read; contact lookups only flag `has_attachments`.
+- Tapback reactions are returned as ordinary messages (flagged `is_reaction` in contact lookups). Their text quotes the message they react to, so the analyzer can count them as questions or action items, and they add to message counts.
+- `analyze_messages.py` splits a conversation into you and everyone else. For group chats (`--include-groups`), message counts and response times are therefore not per person.
 - Extraction (addresses, dates, action items) uses regex heuristics, so expect some misses and false positives.
 
 ## Tests
