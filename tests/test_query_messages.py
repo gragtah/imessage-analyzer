@@ -54,10 +54,15 @@ def typedstream(text):
     )
 
 
-def build_db(path):
+def build_db(path, edit_columns=True):
+    """
+    Build the fixture database. edit_columns=False leaves out date_edited and
+    date_retracted, as on macOS versions before Ventura.
+    """
+    edits = ", date_edited INTEGER DEFAULT 0, date_retracted INTEGER DEFAULT 0" if edit_columns else ""
     conn = sqlite3.connect(path)
     conn.executescript(
-        """
+        f"""
         CREATE TABLE handle (ROWID INTEGER PRIMARY KEY, id TEXT);
         CREATE TABLE chat (ROWID INTEGER PRIMARY KEY, chat_identifier TEXT, display_name TEXT);
         CREATE TABLE chat_handle_join (chat_id INTEGER, handle_id INTEGER);
@@ -65,6 +70,7 @@ def build_db(path):
             ROWID INTEGER PRIMARY KEY, date INTEGER, text TEXT, attributedBody BLOB,
             is_from_me INTEGER, handle_id INTEGER,
             cache_has_attachments INTEGER DEFAULT 0, associated_message_type INTEGER DEFAULT 0
+            {edits}
         );
         CREATE TABLE chat_message_join (chat_id INTEGER, message_id INTEGER);
         CREATE TABLE attachment (
@@ -97,6 +103,9 @@ def build_db(path):
         (10, 3, "2026-10-01 12:45", "\ufffc", None, 0, 2),
         (11, 3, "2026-10-01 12:50", "\ufffcLook at this menu", None, 0, 2),
         (12, 3, "2026-10-01 12:55", None, typedstream("\ufffc\ufffc"), 1, 0),
+        (13, 3, "2026-10-01 13:00", "Running 10 min late", None, 1, 0),
+        # An unsent message keeps its row but loses its text
+        (14, 3, "2026-10-01 13:05", None, None, 1, 0),
     ]
     for rowid, chat, when, text, body, from_me, handle, *rest in messages:
         assoc = rest[0] if rest else 0
@@ -117,6 +126,9 @@ def build_db(path):
         conn.execute("INSERT INTO attachment VALUES (?, ?, ?, ?)", (rowid, filename, mime, name))
         conn.execute("INSERT INTO message_attachment_join VALUES (?, ?)", (message, rowid))
         conn.execute("UPDATE message SET cache_has_attachments = 1 WHERE ROWID = ?", (message,))
+    if edit_columns:
+        conn.execute("UPDATE message SET date_edited = ? WHERE ROWID = 13", (apple_ns("2026-10-01 13:01"),))
+        conn.execute("UPDATE message SET date_retracted = ? WHERE ROWID = 14", (apple_ns("2026-10-01 13:06"),))
     conn.commit()
     conn.close()
 
@@ -135,7 +147,7 @@ class QueryMessagesTest(unittest.TestCase):
     def test_database_is_opened_read_only(self):
         conn = qm.connect()
         self.addCleanup(conn.close)
-        self.assertEqual(conn.execute("SELECT COUNT(*) FROM message").fetchone()[0], 12)
+        self.assertEqual(conn.execute("SELECT COUNT(*) FROM message").fetchone()[0], 14)
         with self.assertRaisesRegex(sqlite3.OperationalError, "readonly"):
             conn.execute("DELETE FROM message")
 
@@ -208,6 +220,28 @@ class QueryMessagesTest(unittest.TestCase):
         self.assertEqual(by_id[10]["text"], "")
         self.assertEqual(by_id[10]["attachments"], [])
         self.assertTrue(by_id[10]["has_attachments"])
+
+    def test_edited_and_unsent_messages_are_flagged(self):
+        by_id = {m["message_id"]: m for m in qm.get_messages_by_phone(BOB, 50)}
+        self.assertTrue(by_id[13]["is_edited"])
+        self.assertFalse(by_id[13]["is_unsent"])
+        self.assertEqual(by_id[13]["text"], "Running 10 min late")
+        self.assertTrue(by_id[14]["is_unsent"])
+        self.assertEqual(by_id[14]["text"], "[message unsent]")
+        self.assertFalse(by_id[8]["is_edited"] or by_id[8]["is_unsent"])
+        found = qm.search_messages("10 min late", 50)
+        self.assertEqual([(m["text"], m["is_edited"], m["is_unsent"]) for m in found],
+                         [("Running 10 min late", True, False)])
+
+    def test_databases_without_edit_columns_still_work(self):
+        older = os.path.join(self.tmp.name, "older.db")
+        build_db(older, edit_columns=False)
+        with mock.patch.object(qm, "get_db_path", return_value=older):
+            by_id = {m["message_id"]: m for m in qm.get_messages_by_phone(BOB, 50)}
+            found = qm.search_messages("10 min late", 50)
+        self.assertFalse(any(m["is_edited"] or m["is_unsent"] for m in by_id.values()))
+        self.assertEqual(by_id[14]["text"], "")
+        self.assertEqual(len(found), 1)
 
     def test_recent_conversations_count_a_group_chat_once(self):
         convos = {c["contact"]: c for c in qm.get_recent_conversations(10)}

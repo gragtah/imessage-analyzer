@@ -144,6 +144,17 @@ def is_tapback(associated_message_type):
     return associated_message_type is not None and 2000 <= associated_message_type < 4000
 
 
+def edit_columns(cursor):
+    """
+    SQL for the date_edited and date_retracted columns, which macOS Ventura
+    added. On older databases both read as 0, so nothing is flagged.
+    """
+    columns = {row[1] for row in cursor.execute("PRAGMA table_info(message)")}
+    return ", ".join(
+        f"m.{name}" if name in columns else "0" for name in ("date_edited", "date_retracted")
+    )
+
+
 def get_messages_by_phone(phone_number, limit=50, include_groups=False):
     """
     Retrieve messages for a specific phone number or email handle.
@@ -163,7 +174,7 @@ def get_messages_by_phone(phone_number, limit=50, include_groups=False):
     # The sender is message.handle_id, not the chat's participant list: joining
     # through chat_handle_join labelled every group message with the queried
     # contact, whoever actually sent it.
-    query = """
+    query = f"""
     SELECT
         m.date,
         m.text,
@@ -173,7 +184,8 @@ def get_messages_by_phone(phone_number, limit=50, include_groups=False):
         m.cache_has_attachments,
         m.associated_message_type,
         m.attributedBody,
-        (SELECT COUNT(*) FROM chat_handle_join p WHERE p.chat_id = cmj.chat_id) as participants
+        (SELECT COUNT(*) FROM chat_handle_join p WHERE p.chat_id = cmj.chat_id) as participants,
+        {edit_columns(cursor)}
     FROM message m
     JOIN chat_message_join cmj ON m.ROWID = cmj.message_id
     LEFT JOIN handle s ON m.handle_id = s.ROWID
@@ -203,8 +215,11 @@ def get_messages_by_phone(phone_number, limit=50, include_groups=False):
         else:
             sender = row[3] or ("Unknown" if is_group else phone_number)
         attachments = attachments_by_message.get(row[4], [])
+        is_unsent = bool(row[10])
         text = message_text(row[1], row[7])
-        if not text.strip() and attachments:
+        if not text.strip() and is_unsent:
+            text = "[message unsent]"
+        elif not text.strip() and attachments:
             text = describe_attachments(attachments)
 
         messages.append({
@@ -216,7 +231,9 @@ def get_messages_by_phone(phone_number, limit=50, include_groups=False):
             "has_attachments": bool(row[5]) or bool(attachments),
             "attachments": attachments,
             "is_reaction": is_tapback(row[6]),
-            "is_group": is_group
+            "is_group": is_group,
+            "is_edited": bool(row[9]),
+            "is_unsent": is_unsent
         })
 
     conn.close()
@@ -239,14 +256,15 @@ def search_messages(search_term, limit=50):
     
     # Messages whose text lives only in attributedBody can't be matched in SQL,
     # so fetch them as candidates and match the decoded text in Python.
-    query = """
+    query = f"""
     SELECT
         m.date,
         m.text,
         m.is_from_me,
         s.id as sender_handle,
         m.attributedBody,
-        m.associated_message_type
+        m.associated_message_type,
+        {edit_columns(cursor)}
     FROM message m
     LEFT JOIN handle s ON m.handle_id = s.ROWID
     WHERE m.text LIKE ?
@@ -270,7 +288,9 @@ def search_messages(search_term, limit=50):
             "text": text,
             "is_from_me": bool(row[2]),
             "sender": "Me" if row[2] else (row[3] or "Unknown"),
-            "is_reaction": is_tapback(row[5])
+            "is_reaction": is_tapback(row[5]),
+            "is_edited": bool(row[6]),
+            "is_unsent": bool(row[7])
         })
         if len(messages) >= limit:
             break
