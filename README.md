@@ -53,7 +53,7 @@ Everything runs locally against your own Messages database, which the scripts op
 ## Known limitations
 
 - Newer macOS versions often store a message's text only in `attributedBody`, an archived rich-text blob in Apple's undocumented typedstream format. The scripts read it with `pytypedstream` if it's installed, and otherwise with a built-in decoder that finds the text without fully parsing the archive. The two agreed on every real message body tested, but the built-in one can misread an archive that isn't a message body. Anything neither can read comes back as empty text rather than an error.
-- Searching has to decode those messages before matching, so a search for a rare term scans more of the database than a plain SQL query would.
+- Search can't match messages stored only in `attributedBody` in SQL, so it reads each of them in Python, using the fast built-in decoder to rule out non-matches first. That's quick (about 0.2 seconds for 100,000 such messages in testing), but search time still grows with the size of your history.
 - A contact with several handles (a phone number and an email, say) has a separate thread per handle; query each one.
 - Contacts appear as phone numbers or emails, not names. The scripts don't read the Contacts app.
 - Edited and unsent messages are flagged (`is_edited`, `is_unsent`) on macOS Ventura and later, but earlier versions of an edited message aren't shown.
