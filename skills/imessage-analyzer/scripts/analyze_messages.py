@@ -176,14 +176,19 @@ def analyze_conversation(messages):
     Returns:
         Dictionary with analysis results
     """
+    # Tapback reactions quote the message they react to, so leaving them in
+    # would repeat that message's questions, links and action items.
+    content = [m for m in messages if not m.get('is_reaction')]
+    stats = get_conversation_stats(content)
+    stats['reactions'] = len(messages) - len(content)
     return {
-        'stats': get_conversation_stats(messages),
-        'urls': extract_urls(messages),
-        'phone_numbers': extract_phone_numbers(messages),
-        'addresses': extract_addresses(messages),
-        'dates_times': extract_dates_times(messages),
-        'action_items': identify_action_items(messages),
-        'questions': identify_questions(messages)
+        'stats': stats,
+        'urls': extract_urls(content),
+        'phone_numbers': extract_phone_numbers(content),
+        'addresses': extract_addresses(content),
+        'dates_times': extract_dates_times(content),
+        'action_items': identify_action_items(content),
+        'questions': identify_questions(content)
     }
 
 
