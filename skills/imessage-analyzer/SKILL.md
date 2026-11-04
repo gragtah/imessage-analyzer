@@ -36,7 +36,9 @@ Analysis extracts:
 - Dates and times mentioned
 - Action items and tasks
 - Questions asked
-- Conversation statistics
+- Conversation statistics, including message counts and response times per sender for group chats
+
+Tapback reactions are skipped in the analysis and counted under `stats.reactions`.
 
 ### Other Queries
 
@@ -109,4 +111,6 @@ When a user asks to analyze iMessage conversations:
 - Message dates are nanoseconds since 2001-01-01 (Apple epoch)
 - Querying a contact returns only your one-to-one thread unless `--include-groups` is passed; each message's `sender` is its actual sender and `is_group` marks group-chat messages
 - When `text` is empty, the scripts decode the message from `attributedBody`, where newer macOS versions store it
+- Tapback reactions (Loved, Laughed at, ...) are flagged `is_reaction`; their text quotes the message they react to, so don't treat them as new messages
+- Contact lookups list each message's `attachments` (name, type, MIME type). A message that is only attachments gets text like `[photo: IMG_1234.HEIC]`; attachment files are never opened
 - Scripts output JSON for easy parsing

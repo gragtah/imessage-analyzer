@@ -55,14 +55,12 @@ Everything runs locally against your own Messages database. The scripts make no 
 - Searching has to decode those messages before matching, so a search for a rare term scans more of the database than a plain SQL query would.
 - A contact with several handles (a phone number and an email, say) has a separate thread per handle; query each one.
 - Contacts appear as phone numbers or emails, not names. The scripts don't read the Contacts app.
-- Messages that are only an attachment (a photo, file or voice memo) come back with blank text. Attachments themselves aren't read; contact lookups only flag `has_attachments`.
-- Tapback reactions are returned as ordinary messages (flagged `is_reaction` in contact lookups). Their text quotes the message they react to, so the analyzer can count them as questions or action items, and they add to message counts.
-- `analyze_messages.py` splits a conversation into you and everyone else. For group chats (`--include-groups`), message counts and response times are therefore not per person.
+- Attachments are described by name and type only, never opened. Contact lookups list them (and describe an attachment-only message as, say, `[photo: IMG_1234.HEIC]`), but search results don't.
 - Extraction (addresses, dates, action items) uses regex heuristics, so expect some misses and false positives.
 
 ## Tests
 
-The tests build a small synthetic `chat.db` (one-to-one chats, a group chat and `attributedBody`-only messages), so they run anywhere without touching real messages:
+The tests build a small synthetic `chat.db` (one-to-one chats, a group chat, `attributedBody`-only messages, tapback reactions and attachments) and sample conversations for the analyzer, so they run anywhere without touching real messages:
 
 ```bash
 python3 -m unittest discover -s tests
@@ -80,7 +78,8 @@ skills/imessage-analyzer/
     query_messages.py  reads chat.db (contacts, recent chats, search, by handle)
     analyze_messages.py  extracts links, action items, questions, stats
 tests/
-  test_query_messages.py  runs against a synthetic chat.db
+  test_query_messages.py    runs against a synthetic chat.db
+  test_analyze_messages.py  runs on sample conversations
 ```
 
 ## License
