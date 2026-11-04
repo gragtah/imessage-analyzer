@@ -326,6 +326,14 @@ def search_messages(search_term, limit=50):
 
     messages = []
     for row in cursor:
+        if not row[1]:
+            # Rule out non-matches with the fast byte scan before decoding
+            # properly: pytypedstream is hundreds of times slower, and the
+            # two read message bodies the same. Blobs the scan can't read
+            # still get the full decode.
+            quick = decode_by_scanning(bytes(row[4]))
+            if quick is not None and needle not in quick.replace(ATTACHMENT_MARKER, "").lower():
+                continue
         text = message_text(row[1], row[4])
         if needle not in text.lower():
             continue

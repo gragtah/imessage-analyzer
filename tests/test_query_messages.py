@@ -263,6 +263,19 @@ class QueryMessagesTest(unittest.TestCase):
         self.assertEqual(by_id[14]["text"], "")
         self.assertEqual(len(found), 1)
 
+    @unittest.skipIf(qm.typedstream is None, "pytypedstream is not installed")
+    def test_search_only_fully_decodes_likely_matches(self):
+        with mock.patch.object(qm, "decode_with_pytypedstream", wraps=qm.decode_with_pytypedstream) as full:
+            self.assertEqual(qm.search_messages("zebra", 50), [])
+            self.assertEqual(full.call_count, 0)
+            self.assertEqual([m["text"] for m in qm.search_messages("unicorn", 50)], [LONG_TEXT])
+            self.assertEqual(full.call_count, 1)
+
+    @unittest.skipIf(qm.typedstream is None, "pytypedstream is not installed")
+    def test_search_still_finds_messages_the_fast_decoder_cannot_read(self):
+        with mock.patch.object(qm, "decode_by_scanning", return_value=None):
+            self.assertEqual([m["text"] for m in qm.search_messages("unicorn", 50)], [LONG_TEXT])
+
     def test_recent_conversations_count_a_group_chat_once(self):
         convos = {c["contact"]: c for c in qm.get_recent_conversations(10)}
         self.assertEqual(set(convos), {ALICE, BOB, "Weekend plans"})
